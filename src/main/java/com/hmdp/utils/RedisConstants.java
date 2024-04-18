@@ -1,10 +1,12 @@
 package com.hmdp.utils;
 
 public class RedisConstants {
-    public static final String LOGIN_CODE_KEY = "login:code:";
-    public static final Long LOGIN_CODE_TTL = 2L;
-    public static final String LOGIN_USER_KEY = "login:token:";
-    public static final Long LOGIN_USER_TTL = 36000L;
+    // 一般 Redis key 用到的前缀和常量都会抽取出来，保存在一个工具类里实现复用
+
+    public static final String LOGIN_CODE_KEY = "login:code:";    // 验证码  login:code:手机号
+    public static final Long LOGIN_CODE_TTL = 2L;                 // 验证码有效期 2分钟
+    public static final String LOGIN_USER_KEY = "login:token:";   // 获取用户信息 判断登录状态 login:token:<token值>
+    public static final Long LOGIN_USER_TTL = 36000L;             // token有效期 10h 超过这个时间没有任何操作就会登出  一般这个时间会取长一点 比如几天
 
     public static final Long CACHE_NULL_TTL = 2L;
 
