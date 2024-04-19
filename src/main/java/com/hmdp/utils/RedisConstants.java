@@ -8,7 +8,7 @@ public class RedisConstants {
     public static final String LOGIN_USER_KEY = "login:token:";   // 获取用户信息 判断登录状态 login:token:<token值>
     public static final Long LOGIN_USER_TTL = 36000L;             // token有效期 10h 超过这个时间没有任何操作就会登出  一般这个时间会取长一点 比如几天
 
-    public static final Long CACHE_NULL_TTL = 2L;
+    public static final Long CACHE_NULL_TTL = 2L;                 // 空值有效期  为解决缓存穿透问题 如果数据库不存在 就在Redis里存个空值 避免下次又打到数据库
 
     public static final Long CACHE_SHOP_TTL = 30L;                // 商铺缓存有效期
     public static final String CACHE_SHOP_KEY = "cache:shop:";    // 商铺缓存 cache:shop:商铺id

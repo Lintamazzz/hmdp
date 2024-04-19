@@ -8,6 +8,7 @@ import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisConstants;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,7 @@ import java.util.concurrent.TimeUnit;
  * @author 虎哥
  * @since 2021-12-22
  */
+@Slf4j
 @Service
 public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IShopService {
 
@@ -37,9 +39,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 2. 判断缓存是否命中
         if (StrUtil.isNotBlank(shopJson)) {
-            // 3. 命中 直接返回
+            // 3. 命中 并且不为空值 直接返回
+            log.debug("命中 shop: {}", shopJson);
             Shop shop = JSONUtil.toBean(shopJson, Shop.class);
             return Result.ok(shop);
+        }
+
+        // 上面 isNotBlank 排除了 shopJson 为 null 或 空白字符串("", "  \t\n")
+        // 这里还要判断命中的是否为空值 ""  如果是空值就不去查数据库 直接返回不存在
+        if (shopJson != null) {
+            log.debug("命中空值");
+            return Result.fail("店铺不存在!");
         }
 
         // 4. 没命中 根据id查数据库
@@ -47,12 +57,15 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 5. 数据库里没有 说明商铺不存在 返回错误
         if (shop == null) {
+            // 将空值写入 Redis
+            stringRedisTemplate.opsForValue().set(key, "", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
+            log.debug("数据库中不存在，将空值写入Redis");
             return Result.fail("店铺不存在!");
         }
 
         // 6. 数据库里查到了 写缓存 然后返回商铺数据
         stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop), RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
-
+        log.debug("没命中 查询数据库 shop: {}", shop);
         return Result.ok(shop);
     }
 
