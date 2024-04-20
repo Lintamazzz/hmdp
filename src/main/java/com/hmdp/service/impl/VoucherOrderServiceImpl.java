@@ -9,6 +9,7 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorkder;
 import com.hmdp.utils.UserHolder;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,6 +24,7 @@ import java.time.LocalDateTime;
  * @author 虎哥
  * @since 2021-12-22
  */
+@Slf4j
 @Service
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
 
@@ -56,9 +58,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         // 4. 扣减库存
         boolean success = seckillVoucherService.update()
-                .setSql("stock = stock - 1")
-                .eq("voucher_id", voucherId).update();
+                .setSql("stock = stock - 1")  // set stock = stock - 1 where id = ? and stock > 0
+                .eq("voucher_id", voucherId)
+                .gt("stock", 0)   // mysql 本身就会用行锁来保证 update 语句的原子性，确保起串行执行，所以只需要在 sql 里判断库存 > 0 即可
+                .update();
         if (!success) {
+            log.debug("扣减失败!");
             return Result.fail("扣减失败!");
         }
 
