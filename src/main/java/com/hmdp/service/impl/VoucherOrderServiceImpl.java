@@ -34,8 +34,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedisIdWorkder redisIdWorkder;
 
+
+    // 这里还有一个 Spring 事务失效的问题，因为 @Transactional 实现事务是基于动态代理实现的
+    // 而在同一个类内部调用事务方法，走的是 this.事务方法，而不是 代理对象.事务方法，会绕过动态代理类，所以事务会失效
+    // 在类内部注入自己是网上找到的一种简单的解决方法，spring ioc 内部的三级缓存可以保证不会出现循环依赖问题
+    @Resource
+    private VoucherOrderServiceImpl voucherOrderService;
+
+
     @Override
-    @Transactional  // 同时更新两张表 失败时回滚？
     public Result seckillVoucher(Long voucherId) {
         // 1. 根据 id 查优惠券信息
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
@@ -56,7 +63,37 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足!");
         }
 
-        // 4. 扣减库存
+        Long userId = UserHolder.getUser().getId();
+        // 1. 为什么是 userId.toString().intern()
+        //    我们的目的是保证：同一个用户的请求，单独使用一把锁
+        //    不能直接用 synchronized(userId) 是因为每次请求都会创建一个新的 Long 对象，这样锁的就不是同一个对象了
+        //    而 intern 方法是从常量池里获取字符串对象，如果常量池没有，就创建一个并返回其引用
+        //    也就是说，相同用户的不同请求，能从常量池中拿到相同的字符串对象，即 userId 值相同，用的就是同一把锁
+        // 2. 为什么要提取成函数再加 synchronized ? 不能直接用 synchronized 吗 ?
+        //    首先这个方法原来是加了 @Transactional 的，因为扣减库存和创建订单需要放到一个事务里 保证同时成功或同时失败
+        //    而在 @Transactional 函数内部加锁，可能会导致：
+        //    锁释放了，但是事务还没提交，即新增的订单还没有实际写到数据库里，此时其他线程拿到锁后开始执行，去查询订单，发现不存在，于是就会导致重复下单
+        //    所以要提取出来，写成函数，在函数外部加锁，这样就能保证：
+        //    当其他线程获取到锁后，事务已经提交，即新增订单已经实际写到数据库里了，此时就不会查到订单不存在
+        synchronized (userId.toString().intern()) {
+            return voucherOrderService.createVoucherOrder(voucherId);
+        }
+    }
+
+    @Transactional  // 扣减库存和创建订单需要放到一个事务里  保证同时成功或同时失败（要么全部执行成功，要么全部不执行）
+    public Result createVoucherOrder(Long voucherId) {
+        // 4. 一人限一单
+        Long userId = UserHolder.getUser().getId();
+
+        // 4.1 查询订单
+        Integer count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        // 4.2 判断是否存在
+        if (count > 0) {
+            // 用户已经抢到优惠券了，不能再多抢了
+            return Result.fail("用户已经购买过了");
+        }
+
+        // 5. 扣减库存
         boolean success = seckillVoucherService.update()
                 .setSql("stock = stock - 1")  // set stock = stock - 1 where id = ? and stock > 0
                 .eq("voucher_id", voucherId)
@@ -67,15 +104,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("扣减失败!");
         }
 
-        // 5. 创建订单
+        // 6. 创建订单
         VoucherOrder voucherOrder = new VoucherOrder();
         long orderId = redisIdWorkder.nextId("order");
         voucherOrder.setId(orderId);   // 订单id
         voucherOrder.setVoucherId(voucherId);  // 优惠券id
-        voucherOrder.setUserId(UserHolder.getUser().getId());  // 用户id
+        voucherOrder.setUserId(userId);  // 用户id
         save(voucherOrder);
 
-        // 6. 返回订单id
+        // 7. 返回订单id
         return Result.ok(orderId);
     }
 }
