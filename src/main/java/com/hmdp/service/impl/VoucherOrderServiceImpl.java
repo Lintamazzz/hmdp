@@ -8,8 +8,10 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorkder;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,6 +43,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private VoucherOrderServiceImpl voucherOrderService;
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -64,21 +69,40 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         Long userId = UserHolder.getUser().getId();
-        // 1. 为什么是 userId.toString().intern()
-        //    我们的目的是保证：同一个用户的请求，单独使用一把锁
-        //    不能直接用 synchronized(userId) 是因为每次请求都会创建一个新的 Long 对象，这样锁的就不是同一个对象了
-        //    而 intern 方法是从常量池里获取字符串对象，如果常量池没有，就创建一个并返回其引用
-        //    也就是说，相同用户的不同请求，能从常量池中拿到相同的字符串对象，即 userId 值相同，用的就是同一把锁
-        // 2. 为什么要提取成函数再加 synchronized ? 不能直接用 synchronized 吗 ?
-        //    首先这个方法原来是加了 @Transactional 的，因为扣减库存和创建订单需要放到一个事务里 保证同时成功或同时失败
-        //    而在 @Transactional 函数内部加锁，可能会导致：
-        //    锁释放了，但是事务还没提交，即新增的订单还没有实际写到数据库里，此时其他线程拿到锁后开始执行，去查询订单，发现不存在，于是就会导致重复下单
-        //    所以要提取出来，写成函数，在函数外部加锁，这样就能保证：
-        //    当其他线程获取到锁后，事务已经提交，即新增订单已经实际写到数据库里了，此时就不会查到订单不存在
-        synchronized (userId.toString().intern()) {
+        // 创建锁对象  注意 key 里要包含 userId，同一个用户单独用一个锁
+        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        // 尝试获取锁
+        boolean isLock = lock.tryLock(10);
+        if (!isLock) {
+            // 获取锁失败说明是来自同一个用户的并发请求
+            // 由于一个人最多下一单，所以这里没有必要进行重试，直接返回错误
+            return Result.fail("一个人只允许下一单");
+        }
+
+        // 保证异常时能手动释放锁
+        try {
             return voucherOrderService.createVoucherOrder(voucherId);
+        } finally {
+            lock.unlock();
         }
     }
+
+    // 单机解决一人一单问题  保存注释
+//    Long userId = UserHolder.getUser().getId();
+    // 1. 为什么是 userId.toString().intern()
+    //    我们的目的是保证：同一个用户的请求，单独使用一把锁
+    //    不能直接用 synchronized(userId) 是因为每次请求都会创建一个新的 Long 对象，这样锁的就不是同一个对象了
+    //    而 intern 方法是从常量池里获取字符串对象，如果常量池没有，就创建一个并返回其引用
+    //    也就是说，相同用户的不同请求，能从常量池中拿到相同的字符串对象，即 userId 值相同，用的就是同一把锁
+    // 2. 为什么要提取成函数再加 synchronized ? 不能直接用 synchronized 吗 ?
+    //    首先这个方法原来是加了 @Transactional 的，因为扣减库存和创建订单需要放到一个事务里 保证同时成功或同时失败
+    //    而在 @Transactional 函数内部加锁，可能会导致：
+    //    锁释放了，但是事务还没提交，即新增的订单还没有实际写到数据库里，此时其他线程拿到锁后开始执行，去查询订单，发现不存在，于是就会导致重复下单
+    //    所以要提取出来，写成函数，在函数外部加锁，这样就能保证：
+    //    当其他线程获取到锁后，事务已经提交，即新增订单已经实际写到数据库里了，此时就不会查到订单不存在
+//    synchronized (userId.toString().intern()) {
+//        return voucherOrderService.createVoucherOrder(voucherId);
+//    }
 
     @Transactional  // 扣减库存和创建订单需要放到一个事务里  保证同时成功或同时失败（要么全部执行成功，要么全部不执行）
     public Result createVoucherOrder(Long voucherId) {
