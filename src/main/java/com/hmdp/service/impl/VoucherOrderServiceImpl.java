@@ -72,7 +72,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         // 创建锁对象  注意 key 里要包含 userId，同一个用户单独用一个锁
         SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
         // 尝试获取锁
-        boolean isLock = lock.tryLock(10);
+        boolean isLock = lock.tryLock(120);
         if (!isLock) {
             // 获取锁失败说明是来自同一个用户的并发请求
             // 由于一个人最多下一单，所以这里没有必要进行重试，直接返回错误
