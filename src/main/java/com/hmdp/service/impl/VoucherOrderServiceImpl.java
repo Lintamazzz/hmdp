@@ -11,6 +11,8 @@ import com.hmdp.utils.RedisIdWorkder;
 import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,6 +48,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private RedissonClient redissonClient;
+
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -70,9 +75,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         Long userId = UserHolder.getUser().getId();
         // 创建锁对象  注意 key 里要包含 userId，同一个用户单独用一个锁
-        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        // SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+
         // 尝试获取锁
-        boolean isLock = lock.tryLock(120);
+        boolean isLock = lock.tryLock();  // 默认非阻塞  锁到期时间30s
         if (!isLock) {
             // 获取锁失败说明是来自同一个用户的并发请求
             // 由于一个人最多下一单，所以这里没有必要进行重试，直接返回错误
