@@ -13,12 +13,15 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
 
 /**
  * <p>
@@ -51,48 +54,83 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedissonClient redissonClient;
 
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    static {
+        // 提前加载 lua 脚本
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
 
     @Override
     public Result seckillVoucher(Long voucherId) {
-        // 1. 根据 id 查优惠券信息
-        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-
-        // 2. 判断秒杀是否开始、是否已结束
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime beginTime = voucher.getBeginTime();
-        LocalDateTime endTime = voucher.getEndTime();
-        if (beginTime.isAfter(now)) {
-            return Result.fail("秒杀尚未开始!");
-        }
-        if (endTime.isBefore(now)) {
-            return Result.fail("秒杀已经结束!");
-        }
-
-        // 3. 判断优惠券库存是否充足
-        if (voucher.getStock() < 1) {
-            return Result.fail("库存不足!");
-        }
-
+        // 1. 执行 Lua 脚本
         Long userId = UserHolder.getUser().getId();
-        // 创建锁对象  注意 key 里要包含 userId，同一个用户单独用一个锁
-        // SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
-        RLock lock = redissonClient.getLock("lock:order:" + userId);
+        Long result = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(), userId.toString());
 
-        // 尝试获取锁
-        boolean isLock = lock.tryLock();  // 默认非阻塞  锁到期时间30s
-        if (!isLock) {
-            // 获取锁失败说明是来自同一个用户的并发请求
-            // 由于一个人最多下一单，所以这里没有必要进行重试，直接返回错误
-            return Result.fail("一个人只允许下一单");
+        // 2. 判断是否秒杀成功
+        int r = result.intValue();
+        // 2.1 返回非 0 说明秒杀失败，根据返回值返回错误信息
+        if (r != 0) {
+            if (r == 1) return Result.fail("库存不足");
+            if (r == 2) return Result.fail("不能重复下单");
         }
+        // 2.2 返回 0 说明秒杀成功，把下单信息保存到阻塞队列，执行异步下单流程
+        // 生成订单id
+        long orderId = redisIdWorkder.nextId("order");
+        // TODO 将优惠券id、用户id、订单id 保存到阻塞队列，执行异步下单
 
-        // 保证异常时能手动释放锁
-        try {
-            return voucherOrderService.createVoucherOrder(voucherId);
-        } finally {
-            lock.unlock();
-        }
+
+        // 3、返回订单id
+        log.debug("秒杀成功，订单id = {}", orderId);
+        return Result.ok(orderId);
     }
+
+//    @Override
+//    public Result seckillVoucher(Long voucherId) {
+//        // 1. 根据 id 查优惠券信息
+//        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+//
+//        // 2. 判断秒杀是否开始、是否已结束
+//        LocalDateTime now = LocalDateTime.now();
+//        LocalDateTime beginTime = voucher.getBeginTime();
+//        LocalDateTime endTime = voucher.getEndTime();
+//        if (beginTime.isAfter(now)) {
+//            return Result.fail("秒杀尚未开始!");
+//        }
+//        if (endTime.isBefore(now)) {
+//            return Result.fail("秒杀已经结束!");
+//        }
+//
+//        // 3. 判断优惠券库存是否充足
+//        if (voucher.getStock() < 1) {
+//            return Result.fail("库存不足!");
+//        }
+//
+//        Long userId = UserHolder.getUser().getId();
+//        // 创建锁对象  注意 key 里要包含 userId，同一个用户单独用一个锁
+//        // SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+//        RLock lock = redissonClient.getLock("lock:order:" + userId);
+//
+//        // 尝试获取锁
+//        boolean isLock = lock.tryLock();  // 默认非阻塞  锁到期时间30s
+//        if (!isLock) {
+//            // 获取锁失败说明是来自同一个用户的并发请求
+//            // 由于一个人最多下一单，所以这里没有必要进行重试，直接返回错误
+//            return Result.fail("一个人只允许下一单");
+//        }
+//
+//        // 保证异常时能手动释放锁
+//        try {
+//            return voucherOrderService.createVoucherOrder(voucherId);
+//        } finally {
+//            lock.unlock();
+//        }
+//    }
 
     // 单机解决一人一单问题  保存注释
 //    Long userId = UserHolder.getUser().getId();
