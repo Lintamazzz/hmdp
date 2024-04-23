@@ -19,9 +19,14 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * <p>
@@ -56,6 +61,56 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
 
+    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+
+    private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+
+    private class VoucherOrderHandler implements Runnable {
+        @Override
+        public void run() {
+            while (true) {
+                try {
+                    // 1. 获取阻塞队列中的订单信息
+                    log.debug("正在等待订单");
+                    VoucherOrder voucherOrder = orderTasks.take();
+                    log.debug("获取到异步订单: {}", voucherOrder);
+                    // 2. 创建订单
+                    voucherOrderService.handleVoucherOrder(voucherOrder);
+                } catch (Exception e) {
+                    log.debug("处理订单异常", e);
+                }
+            }
+        }
+    }
+
+    @Transactional
+    public void handleVoucherOrder(VoucherOrder voucherOrder) {
+        // 扣减库存
+        boolean stockSuccess = seckillVoucherService.update()
+                .setSql("stock = stock - 1")  // set stock = stock - 1 where id = ? and stock > 0
+                .eq("voucher_id", voucherOrder.getVoucherId())
+                .gt("stock", 0)   // mysql 本身就会用行锁来保证 update 语句的原子性，确保起串行执行，所以只需要在 sql 里判断库存 > 0 即可解决超卖
+                .update();
+        if (!stockSuccess) {
+            log.debug("扣减库存失败!");
+            return;
+        }
+
+        // 创建订单
+        boolean orderSuccess = save(voucherOrder);
+        if (!orderSuccess) {
+            log.debug("创建订单失败!");
+            return;
+        }
+        log.debug("mysql 扣减库存 创建订单成功");
+    }
+
+    @PostConstruct  // Spring Bean生命周期的知识点
+    private void init() {
+        // 当前类初始化完毕后，就开启一个线程用于处理异步下单任务
+        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+    }
+
     static {
         // 提前加载 lua 脚本
         SECKILL_SCRIPT = new DefaultRedisScript<>();
@@ -82,8 +137,13 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         // 2.2 返回 0 说明秒杀成功，把下单信息保存到阻塞队列，执行异步下单流程
         // 生成订单id
         long orderId = redisIdWorkder.nextId("order");
-        // TODO 将优惠券id、用户id、订单id 保存到阻塞队列，执行异步下单
-
+        // 将下单信息（优惠券id、用户id、订单id）保存到阻塞队列，执行异步下单
+        VoucherOrder voucherOrder = new VoucherOrder();
+        voucherOrder.setId(orderId);   // 订单id
+        voucherOrder.setVoucherId(voucherId);  // 优惠券id
+        voucherOrder.setUserId(userId);  // 用户id
+        log.debug("添加订单到阻塞队列 订单id = {}", orderId);
+        orderTasks.add(voucherOrder);
 
         // 3、返回订单id
         log.debug("秒杀成功，订单id = {}", orderId);
