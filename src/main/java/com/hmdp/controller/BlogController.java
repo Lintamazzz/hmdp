@@ -74,4 +74,14 @@ public class BlogController {
         // 查看点赞用户排行榜
         return blogService.queryBlogLikes(id);
     }
+
+    @GetMapping("/of/user")
+    public Result queryBlogByUserId(@RequestParam(value = "current", defaultValue = "1") Integer current, @RequestParam("id") Long id) {
+        // 根据用户查询 blog
+        Page<Blog> page = blogService.query()
+                .eq("user_id", id).page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+
+        return Result.ok(page.getRecords());
+    }
+
 }
