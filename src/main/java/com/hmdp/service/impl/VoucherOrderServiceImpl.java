@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.BooleanUtil;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
@@ -66,8 +67,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
 
+    private static final String STREAM_KEY = "stream.orders";
+    private static final String GROUP_NAME = "g1";
+
+    private static final String CONSUMER_NAME = "c1";
+
+
     private class VoucherOrderHandler implements Runnable {
-        String queueName = "stream.orders";
+
 
         @Override
         public void run() {
@@ -77,9 +84,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     // 1. 获取 Redis Stream 消息队列中的订单信息
                     //    XREADGROUP GROUP g1 c1 COUNT 1 BLOCK 2000 STREAMS stream.orders >
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
-                            Consumer.from("g1", "c1"),
+                            Consumer.from(GROUP_NAME, CONSUMER_NAME),
                             StreamReadOptions.empty().count(1).block(Duration.ofSeconds(2)),
-                            StreamOffset.create(queueName, ReadOffset.lastConsumed())
+                            StreamOffset.create(STREAM_KEY, ReadOffset.lastConsumed())
                     );
 
                     // 2. 判断消息获取是否成功
@@ -101,7 +108,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
                     // 4. ACK确认  XACK stream.orders g1 id
                     log.debug("发送 ACK 消息id = {}", msg.getId());
-                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", msg.getId());
+                    stringRedisTemplate.opsForStream().acknowledge(STREAM_KEY, GROUP_NAME, msg.getId());
 
                 } catch (Exception e) {
                     log.debug("处理订单异常", e);
@@ -117,9 +124,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     // 1. 从 Pending List 获取第一条订单消息
                     //    XREADGROUP GROUP g1 c1 COUNT 1 STREAMS stream.orders 0
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
-                            Consumer.from("g1", "c1 "),
+                            Consumer.from(GROUP_NAME, CONSUMER_NAME),
                             StreamReadOptions.empty().count(1),
-                            StreamOffset.create(queueName, ReadOffset.from("0"))
+                            StreamOffset.create(STREAM_KEY, ReadOffset.from("0"))
                     );
 
                     // 2. 判断消息获取是否成功
@@ -141,7 +148,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
                     // 4. ACK确认  XACK stream.orders g1 id
                     log.debug("发送 ACK 消息id = {}", msg.getId());
-                    stringRedisTemplate.opsForStream().acknowledge(queueName, "g1", msg.getId());
+                    stringRedisTemplate.opsForStream().acknowledge(STREAM_KEY, GROUP_NAME, msg.getId());
 
                 } catch (Exception e) {
                     log.debug("处理 pending-list 订单异常", e);
@@ -190,6 +197,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @PostConstruct  // Spring Bean生命周期的知识点
     private void init() {
+        // 在 Redis 中创建 stream.orders
+        if (BooleanUtil.isFalse(stringRedisTemplate.hasKey(STREAM_KEY))) {
+            stringRedisTemplate.opsForStream().createGroup(STREAM_KEY, ReadOffset.from("0"), GROUP_NAME);
+        }
         // 当前类初始化完毕后，就开启一个线程用于处理异步下单任务
         SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
     }
