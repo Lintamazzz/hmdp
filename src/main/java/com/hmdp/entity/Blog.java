@@ -51,7 +51,8 @@ public class Blog implements Serializable {
     @TableField(exist = false)
     private String name;
     /**
-     * 是否点赞过了
+     * 该 blog 是否被当前用户点赞过
+     * 根据 id 查询 blog 以及首页分页查询时，要根据是否点赞来设置 isLike 字段，前端根据该字段高亮点赞
      */
     @TableField(exist = false)
     private Boolean isLike;
