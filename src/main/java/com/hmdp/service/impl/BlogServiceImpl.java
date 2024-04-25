@@ -4,6 +4,7 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Follow;
@@ -17,9 +18,11 @@ import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -168,6 +171,60 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
         // 返回id
         return Result.ok(blog.getId());
+    }
+
+    @Override  // 分页查询收件箱中的博客id
+    public Result queryBlogOfFollow(Long max, Integer offset) {
+        // 获取当前用户
+        Long userId = UserHolder.getUser().getId();
+
+        // 查询收件箱
+        // 关键命令：ZREVRANGE key max min WITHSCORES LIMIT offset count
+        // 关键参数：max、offset  之后需要计算并返回前端 以供下一次分页查询
+        String key = RedisConstants.FEED_KEY + userId;
+        Set<ZSetOperations.TypedTuple<String>> typedTuples = stringRedisTemplate.opsForZSet()
+                .reverseRangeByScoreWithScores(key, 0, max, offset, 3);
+        if (typedTuples == null || typedTuples.isEmpty()) {
+            return Result.ok();
+        }
+        
+        // 解析数据：博客 id、这一次查询最小时间戳（用作下一次查询的最大时间戳）、计算下一次的 offset（这一次查询中最小时间戳重复的个数）
+        List<Long> ids = new ArrayList<>();
+        long minTime = 0;
+        int os = 1;
+        for (ZSetOperations.TypedTuple<String> tuple : typedTuples) {
+            // 获取 blog id
+            String idStr = tuple.getValue();
+            ids.add(Long.valueOf(idStr));
+            // 计算 offset
+            long time = tuple.getScore().longValue();
+            if (time == minTime) {
+                os++;
+            } else {
+                // 获取最小时间戳  最后一个一定是最小的
+                minTime = time;
+                os = 1;
+            }
+
+        }
+        
+        // 根据 id 查询博客 注意要保证顺序
+        String idStr = StrUtil.join(",", ids);
+        List<Blog> blogs = query().in("id", ids).last("ORDER BY FIELD(id, " + idStr + ")").list();
+        for (Blog blog : blogs) {
+            // 查询 blog 相关的用户信息
+            queryBlogUser(blog);
+            // 查询 blog 有没有被当前用户点赞
+            isBlogLiked(blog);
+        }
+
+        // 封装并返回
+        ScrollResult r = new ScrollResult();
+        r.setList(blogs);
+        r.setOffset(os);
+        r.setMinTime(minTime);
+
+        return Result.ok(r);
     }
 
     private void queryBlogUser(Blog blog) {
