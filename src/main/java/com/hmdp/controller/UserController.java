@@ -101,4 +101,10 @@ public class UserController {
     public Result sign() {
         return userService.sign();
     }
+
+    @GetMapping("/sign/count")
+    public Result signCount() {
+        // 返回当前用户截止当前时间在本月的连续签到次数
+        return userService.signCount();
+    }
 }
