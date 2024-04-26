@@ -14,12 +14,15 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -112,6 +115,25 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         log.debug("登录成功，用户信息: {}", user);
         log.debug("token: {}", token);
         return Result.ok(token);
+    }
+
+    @Override
+    public Result sign() {
+        // 获取当前用户
+        Long userId = UserHolder.getUser().getId();
+
+        // 获取当前时间
+        LocalDateTime now = LocalDateTime.now();
+
+        // 拼接 key
+        String timeSuffix = now.format(DateTimeFormatter.ofPattern(":yyyy:MM"));
+        String key = RedisConstants.USER_SIGN_KEY + userId + timeSuffix;   // sign:userId:yyyy:MM
+
+        // 保存到 redis 的 bitmap 里 SETBIT key offset 1
+        int offset = now.getDayOfMonth() - 1;   // 返回1~31  所以要-1
+        stringRedisTemplate.opsForValue().setBit(key, offset, true);
+
+        return Result.ok();
     }
 
     private User createUserWithPhone(String phone) {
